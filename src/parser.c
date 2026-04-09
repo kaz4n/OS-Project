@@ -109,20 +109,95 @@ int parse_input(char *input_line, Pipeline *pipeline)
 
     for (int i = 0; i < segment_count; i++)
     {
-        char *arg;
+        char *p;
         int argc = 0;
         Command *cmd = &pipeline->commands[pipeline->num_commands];
 
-        arg = strtok(segments[i], " \t");
-        while (arg != NULL)
+        p = segments[i];
+
+        while (*p != '\0')
         {
+            char *token_start;
+            char *write;
+            int in_quote = 0;
+            char quote_char = '\0';
+            int ended_on_space;
+
+            while (*p != '\0' && isspace((unsigned char)*p))
+            {
+                p++;
+            }
+
+            if (*p == '\0')
+            {
+                break;
+            }
+
             if (argc >= MAX_ARGS - 1)
             {
                 return 0;
             }
 
-            cmd->argv[argc++] = arg;
-            arg = strtok(NULL, " \t");
+            token_start = p;
+            write = p;
+
+            while (*p != '\0')
+            {
+                char ch = *p;
+
+                if (!in_quote && isspace((unsigned char)ch))
+                {
+                    break;
+                }
+
+                if (ch == '\\' && p[1] != '\0')
+                {
+                    p++;
+                    *write++ = *p++;
+                    continue;
+                }
+
+                if (ch == '"' || ch == '\'')
+                {
+                    if (!in_quote)
+                    {
+                        in_quote = 1;
+                        quote_char = ch;
+                        p++;
+                        continue;
+                    }
+
+                    if (ch == quote_char)
+                    {
+                        in_quote = 0;
+                        quote_char = '\0';
+                        p++;
+                        continue;
+                    }
+                }
+
+                *write++ = ch;
+                p++;
+            }
+
+            if (in_quote)
+            {
+                return 0;
+            }
+
+            ended_on_space = (*p != '\0' && isspace((unsigned char)*p));
+            *write = '\0';
+            cmd->argv[argc++] = token_start;
+
+            if (ended_on_space)
+            {
+                p++;
+            }
+
+            while (*p != '\0' && isspace((unsigned char)*p))
+            {
+                p++;
+            }
         }
 
         if (argc == 0)

@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -36,7 +37,23 @@ void start_shell_loop(void)
 
 void print_shell_name(void)
 {
-    printf("myshell> ");
+    char cwd[1024];
+    char hostname[256];
+
+    if (gethostname(hostname, sizeof(hostname)) != 0)
+    {
+        strcpy(hostname, "unknown");
+    }
+    hostname[sizeof(hostname) - 1] = '\0';
+
+    if (getcwd(cwd, sizeof(cwd)) != NULL)
+    {
+        printf("%s:%s> ", hostname, cwd);
+    }
+    else
+    {
+        printf("%s> ", hostname);
+    }
 }
 
 char *read_line_from_user(void)
