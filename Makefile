@@ -1,17 +1,22 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -g
-SRC = src/main.c src/shell_loop.c src/parser.c src/executor.c
 TARGET = myshell
+SRC = $(wildcard src/*.c) $(wildcard src/custom/*.c)
+SRC := $(filter-out src/custom/test_program.c,$(SRC))
+OBJ = $(SRC:.c=.o)
 
 all: $(TARGET)
 
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $(TARGET) $(SRC)
+$(TARGET): $(OBJ)
+	$(CC) $(CFLAGS) -o $(TARGET) $(OBJ)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
 run: $(TARGET)
 	./$(TARGET)
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) $(OBJ)
 
 .PHONY: all run clean

@@ -26,5 +26,17 @@ int is_valid_pipe_syntax(const char *line);
 int parse_input(char *input_line, Pipeline *pipeline);
 
 void execute_pipeline(Pipeline *pipeline);
+void handle_cd(Command *cmd);
+
+
+/* Builtins */
+void builtin_pwd(void);
+void builtin_ls(Command *cmd);
+void builtin_mkdir(Command *cmd);
+void builtin_rm(Command *cmd);
+void builtin_rm_recursive(const char *path);
+void builtin_echo(Command *cmd);
+void builtin_whoami(void);
+void builtin_clear(void);
 
 #endif

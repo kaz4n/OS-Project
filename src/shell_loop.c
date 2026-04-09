@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <unistd.h>
+#include <string.h>
+#include <stdio.h>
 #include "shell.h"
 
 void start_shell_loop(void)
@@ -85,6 +88,26 @@ int is_empty_line(char *line)
     return 1;
 }
 
+// Old Code
+//  void process_input(char *input_line)
+//  {
+//      Pipeline pipeline;
+
+//     if (!is_valid_pipe_syntax(input_line))
+//     {
+//         printf("Syntax error: invalid pipe usage\n");
+//         return;
+//     }
+
+//     if (!parse_input(input_line, &pipeline))
+//     {
+//         printf("Parse error\n");
+//         return;
+//     }
+
+//     execute_pipeline(&pipeline);
+// }
+
 void process_input(char *input_line)
 {
     Pipeline pipeline;
@@ -101,5 +124,44 @@ void process_input(char *input_line)
         return;
     }
 
+    /* Handle builtins — must run in parent process, not a fork */
+    // if (pipeline.num_commands == 1)
+    // {
+    //     char *cmd = pipeline.commands[0].argv[0];
+
+    //     if (strcmp(cmd, "cd") == 0)
+    //     {
+    //         handle_cd(&pipeline.commands[0]);
+    //         return;
+    //     }
+    //     if (strcmp(cmd, "exit") == 0)
+    //     {
+    //         printf("Goodbye!\n");
+    //         exit(0);
+    //     }
+    // }
+
+        if (pipeline.num_commands == 1)
+    {
+        char *cmd = pipeline.commands[0].argv[0];
+ 
+        if (strcmp(cmd, "cd") == 0)
+        {
+            handle_cd(&pipeline.commands[0]);
+            return;
+        }
+
+        if (strcmp(cmd, "cd_new")     == 0) { handle_cd(&pipeline.commands[0]);     return; }
+        if (strcmp(cmd, "pwd_new")    == 0) { builtin_pwd();                         return; }
+        if (strcmp(cmd, "ls_new") == 0) { builtin_ls(&pipeline.commands[0]);     return; }
+        if (strcmp(cmd, "mkdir_new")  == 0) { builtin_mkdir(&pipeline.commands[0]);  return; }
+        if (strcmp(cmd, "rm_new")     == 0) { builtin_rm(&pipeline.commands[0]);     return; }
+        if (strcmp(cmd, "echo_new")   == 0) { builtin_echo(&pipeline.commands[0]);   return; }
+        if (strcmp(cmd, "whoami_new") == 0) { builtin_whoami();                      return; }
+        if (strcmp(cmd, "clear_new")  == 0) { builtin_clear();                       return; }
+        if (strcmp(cmd, "exit_new")   == 0) { printf("Goodbye!\n"); exit(0); }
+    }
     execute_pipeline(&pipeline);
 }
+
+
