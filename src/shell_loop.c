@@ -176,6 +176,17 @@ void process_input(char *input_line)
         if (strcmp(cmd, "echo_new")   == 0) { builtin_echo(&pipeline.commands[0]);   return; }
         if (strcmp(cmd, "whoami_new") == 0) { builtin_whoami();                      return; }
         if (strcmp(cmd, "clear_new")  == 0) { builtin_clear();                       return; }
+        if (strcmp(cmd, "help_new")   == 0) { builtin_help();                        return; }
+        if (strcmp(cmd, "date_new")   == 0) { builtin_date();                        return; }
+        if (strcmp(cmd, "uname_new")  == 0) { builtin_uname();                       return; }
+        if (strcmp(cmd, "touch_new")  == 0) { builtin_touch(&pipeline.commands[0]);  return; }
+        if (strcmp(cmd, "cat_new")    == 0) { builtin_cat(&pipeline.commands[0]);    return; }
+        if (strcmp(cmd, "head_new")   == 0) { builtin_head(&pipeline.commands[0]);   return; }
+        if (strcmp(cmd, "tail_new")   == 0) { builtin_tail(&pipeline.commands[0]);   return; }
+        if (strcmp(cmd, "cp_new")     == 0) { builtin_cp(&pipeline.commands[0]);     return; }
+        if (strcmp(cmd, "mv_new")     == 0) { builtin_mv(&pipeline.commands[0]);     return; }
+        if (strcmp(cmd, "rmdir_new")  == 0) { builtin_rmdir(&pipeline.commands[0]);  return; }
+        if (strcmp(cmd, "wc_new")     == 0) { builtin_wc(&pipeline.commands[0]);     return; }
         if (strcmp(cmd, "exit_new")   == 0) { printf("Goodbye!\n"); exit(0); }
     }
     execute_pipeline(&pipeline);
