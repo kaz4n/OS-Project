@@ -44,55 +44,43 @@ int connect_to_server(const char *ip, int port) {
 }
 
 /* Send commands to the server and print the response */
-void client_loop(int sock) {
-    char input[BUFFER_SIZE];
-    char buffer[BUFFER_SIZE];
-    int bytes_received;
+void client_loop() {
+    char input[1024];
+    char buffer[1024];
+    int sock;
+    int n;
 
     while (1) {
         printf("remote-shell> ");
 
-        // Read command from user
         if (fgets(input, sizeof(input), stdin) == NULL) {
             break;
         }
 
-        // Send command to server
-        send(sock, input, strlen(input), 0);
-
-        // If user typed exit, stop the client too
         if (strcmp(input, "exit\n") == 0) {
             break;
         }
 
-        // Clear buffer before receiving
-        memset(buffer, 0, sizeof(buffer));
-
-        // Receive response from server
-        bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
-        if (bytes_received <= 0) {
-            printf("Server disconnected.\n");
-            break;
+        sock = connect_to_server("127.0.0.1", PORT);
+        if (sock < 0) {
+            printf("Could not connect to server.\n");
+            continue;
         }
 
-        buffer[bytes_received] = '\0';
+        send(sock, input, strlen(input), 0);
 
-        // Print server response
-        printf("%s", buffer);
+        while ((n = recv(sock, buffer, sizeof(buffer) - 1, 0)) > 0) {
+            buffer[n] = '\0';
+            printf("%s", buffer);
+        }
+
+        close(sock);
     }
 }
 
-/* Main client program */
+
+
 int main() {
-    int sock;
-
-    sock = connect_to_server(SERVER_IP, PORT);
-    if (sock < 0) {
-        return 1;
-    }
-
-    client_loop(sock);
-
-    close(sock);
+    client_loop();
     return 0;
 }

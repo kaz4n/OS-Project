@@ -53,38 +53,41 @@ int accept_client(int server_fd) {
 
 void execute_remote_command(int client_fd, char *command) {
     int saved_stdout;
-    char buff[BUFFER_SIZE];
-
-    strncpy(buff, command, sizeof(buff) - 1);
-    buff[sizeof(buff) - 1] = '\0';
+    int saved_stderr;
 
     saved_stdout = dup(STDOUT_FILENO);
-    dup2(client_fd, STDOUT_FILENO);
+    saved_stderr = dup(STDERR_FILENO);
 
-    process_input(buff);
+    dup2(client_fd, STDOUT_FILENO);
+    dup2(client_fd, STDERR_FILENO);
+
+    process_input(command);
 
     fflush(stdout);
-    dup2(saved_stdout, STDOUT_FILENO);
-    close(saved_stdout);
-}
+    fflush(stderr);
 
+    dup2(saved_stdout, STDOUT_FILENO);
+    dup2(saved_stderr, STDERR_FILENO);
+
+    close(saved_stdout);
+    close(saved_stderr);
+}
 void handle_client(int client_fd) {
-    char buffer[BUFFER_SIZE];
+    char buffer[1024];
     int n;
 
-    while (1) {
-        n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
-        if (n <= 0)
-            break;
+    memset(buffer, 0, sizeof(buffer));
 
-        buffer[n] = '\0';
-        buffer[strcspn(buffer, "\r\n")] = '\0';
-
-        if (strcmp(buffer, "exit") == 0)
-            break;
-
-        execute_remote_command(client_fd, buffer);
+    n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+    if (n <= 0) {
+        close(client_fd);
+        return;
     }
+
+    buffer[n] = '\0';
+    buffer[strcspn(buffer, "\r\n")] = '\0';
+
+    execute_remote_command(client_fd, buffer);
 
     close(client_fd);
 }
