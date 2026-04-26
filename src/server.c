@@ -5,9 +5,20 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include "shell.h"
+#include <pthread.h>
+
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
+
+void *client_thread(void *arg) {
+    int client_fd = *(int *)arg;
+    free(arg);
+
+    handle_client(client_fd);
+
+    return NULL;
+}
 
 int setup_server_socket(int port) {
     int server_fd;
@@ -95,13 +106,34 @@ void handle_client(int client_fd) {
 int main() {
     int server_fd = setup_server_socket(PORT);
 
-    while (1) {
+ while (1) {
         int client_fd = accept_client(server_fd);
-        if (client_fd < 0)
-            continue;
 
-        handle_client(client_fd);
+        if (client_fd < 0) {
+            continue;
+        }
+
+        pthread_t tid;
+        int *pclient = malloc(sizeof(int));
+
+        if (pclient == NULL) {
+            perror("malloc failed");
+            close(client_fd);
+            continue;
+        }
+
+        *pclient = client_fd;
+
+        if (pthread_create(&tid, NULL, client_thread, pclient) != 0) {
+            perror("pthread_create failed");
+            close(client_fd);
+            free(pclient);
+            continue;
+        }
+
+        pthread_detach(tid);
     }
+
 
     close(server_fd);
     return 0;
