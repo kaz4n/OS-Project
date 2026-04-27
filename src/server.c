@@ -6,10 +6,29 @@
 #include <sys/socket.h>
 #include "shell.h"
 #include <pthread.h>
+#include "scheduler.h"
 
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
+
+static Scheduler g_scheduler;
+
+void handle_client(int client_fd);
+
+static int send_all(int fd, const char *buf, size_t len) {
+    size_t sent = 0;
+
+    while (sent < len) {
+        ssize_t n = send(fd, buf + sent, len - sent, 0);
+        if (n <= 0) {
+            return 0;
+        }
+        sent += (size_t)n;
+    }
+
+    return 1;
+}
 
 void *client_thread(void *arg) {
     int client_fd = *(int *)arg;
@@ -39,7 +58,7 @@ int setup_server_socket(int port) {
         exit(EXIT_FAILURE);
     }
 
-    if (listen(server_fd, 1) < 0) {
+    if (listen(server_fd, 16) < 0) {
         perror("Listen failed");
         close(server_fd);
         exit(EXIT_FAILURE);
@@ -62,30 +81,10 @@ int accept_client(int server_fd) {
     return client_fd;
 }
 
-void execute_remote_command(int client_fd, char *command) {
-    int saved_stdout;
-    int saved_stderr;
-
-    saved_stdout = dup(STDOUT_FILENO);
-    saved_stderr = dup(STDERR_FILENO);
-
-    dup2(client_fd, STDOUT_FILENO);
-    dup2(client_fd, STDERR_FILENO);
-
-    process_input(command);
-
-    fflush(stdout);
-    fflush(stderr);
-
-    dup2(saved_stdout, STDOUT_FILENO);
-    dup2(saved_stderr, STDERR_FILENO);
-
-    close(saved_stdout);
-    close(saved_stderr);
-}
 void handle_client(int client_fd) {
     char buffer[1024];
     int n;
+    Job *job;
 
     memset(buffer, 0, sizeof(buffer));
 
@@ -98,12 +97,31 @@ void handle_client(int client_fd) {
     buffer[n] = '\0';
     buffer[strcspn(buffer, "\r\n")] = '\0';
 
-    execute_remote_command(client_fd, buffer);
+    job = scheduler_submit(&g_scheduler, client_fd, buffer);
+    if (job == NULL) {
+        const char *msg = "scheduler: failed to queue job\n";
+        send_all(client_fd, msg, strlen(msg));
+        close(client_fd);
+        return;
+    }
+
+    scheduler_wait(job);
+
+    if (job->output != NULL && job->output_len > 0) {
+        send_all(client_fd, job->output, job->output_len);
+    }
+
+    scheduler_destroy_job(job);
 
     close(client_fd);
 }
 
 int main() {
+    if (!scheduler_init(&g_scheduler, DEFAULT_QUANTUM_MS)) {
+        fprintf(stderr, "Failed to initialize scheduler\n");
+        return 1;
+    }
+
     int server_fd = setup_server_socket(PORT);
 
  while (1) {
@@ -136,5 +154,6 @@ int main() {
 
 
     close(server_fd);
+    scheduler_shutdown(&g_scheduler);
     return 0;
 }
