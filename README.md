@@ -173,10 +173,10 @@ cat demo.c | grep include | wc -l
 
 Run in Linux/WSL for full process and pipe features.
 
-Quick run (all Phase 3 tests):
+Run all automated checks for the project (Phase 1–3):
 
 ```bash
-bash ./phase3_tests.sh
+bash ./run_tests.sh
 ```
 
 ### Build
@@ -186,24 +186,27 @@ make clean
 make
 ```
 
-### Test 1: Single Client Command + Scheduler Metadata
+### Test 1: Phase 1 (Local shell) and basic check
 
-Terminal A:
+Phase 1 quick check (local shell):
 
 ```bash
-./server
+make
+printf "pwd_new\nexit_new\n" | ./myshell
 ```
 
-Terminal B:
+Phase 2 quick check (remote client/server):
 
 ```bash
-printf "echo hello_from_client_2\nexit\n" | ./client
+./server &
+printf "echo_new hello_remote\nexit\n" | ./client
+kill $!
 ```
 
 Expected:
 
-- Normal command output is printed (current directory).
-- Response ends with a scheduler line like:
+- Phase 1 prints the current working directory.
+- Phase 2 prints `hello_remote` and a scheduler line like:
 
 ```text
 [scheduler] job=1 wait_ms=<number> runtime_ms=<number> quantum_ms=200 exit=0
@@ -212,30 +215,14 @@ Expected:
 Actual:
 
 ```text
-hello_from_client_2
+hello_remote
 
 [scheduler] job=1 wait_ms=0 runtime_ms=201 quantum_ms=200 exit=0
 ```
 
-### Test 2: Concurrent Clients (Queue + Threaded Handling)
+### Test 2: Concurrent clients + scheduler (Phase 2/3)
 
-Terminal A:
-
-```bash
-./server
-```
-
-Terminal B:
-
-```bash
-printf "sleep 1\nexit\n" | ./client
-```
-
-Terminal C (start immediately after B):
-
-```bash
-printf "echo queued_client\nexit\n" | ./client
-```
+A general concurrent test will run the server and multiple clients and show scheduler metadata. Use the included `run_tests.sh` to execute a set of reproducible checks.
 
 Expected:
 
@@ -254,12 +241,12 @@ queued_client
 [scheduler] job=3 wait_ms=1200 runtime_ms=201 quantum_ms=200 exit=0
 ```
 
-### Test 3: Pipeline Command Through Remote Path
+### Test 3: Pipelines
 
-Terminal B:
+Pipelines are supported (POSIX only). Example (local):
 
 ```bash
-printf "cat demo.c | wc -l\nexit\n" | ./client
+printf "cat demo.c | wc -l\nexit\n" | ./myshell
 ```
 
 Expected:
