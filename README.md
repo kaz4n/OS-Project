@@ -11,6 +11,8 @@ This project supports:
 - Remote client/server shell over TCP sockets
 - Multi-client request handling with threads
 - Time-based dispatcher scheduler (job queue + timestamps + quantum)
+ - Remote client/server shell over TCP sockets
+ - Multi-client request handling with threads
 
 ## Project Structure
 
@@ -151,11 +153,7 @@ cat demo.c | grep include | wc -l
 - Command execution is isolated in a child process.
 - Child `stdout` and `stderr` are redirected to a pipe, captured by the parent, and sent back only to the requesting client socket.
 - Scheduler metadata is appended to each response:
-	- job id
-	- queue wait time in ms
-	- runtime in ms
-	- configured quantum in ms
-	- command exit code
+	(scheduler removed in this build; server runs each client request in parallel threads)
 
 ### Synchronization
 
@@ -163,11 +161,9 @@ cat demo.c | grep include | wc -l
 - Dispatcher waits on `pthread_cond_t` when queue is empty.
 - Each submitted job has its own condition variable for completion signaling back to the client thread.
 
-### Time-Based Scheduling
+### Parallel execution
 
-- Scheduler quantum is currently set to `200 ms` by default.
-- Dispatcher loop polls process completion using this quantum interval.
-- Queue wait and execution duration are timestamped using `clock_gettime`.
+- Server now executes each client request in a separate thread and runs the requested command in a child process. The parent captures the child's stdout/stderr and forwards only that output back to the requesting client.
 
 ## Reproducible Test Cases
 

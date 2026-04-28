@@ -8,7 +8,7 @@ CLIENT_TARGET = client
 PHASE1_SRC = $(wildcard src/*.c) $(wildcard src/custom/*.c)
 PHASE1_SRC := $(filter-out src/server.c src/client.c src/custom/test_program.c,$(PHASE1_SRC))
 
-SERVER_SRC = src/server.c src/scheduler.c src/parser.c src/executor.c src/shell_loop.c $(wildcard src/custom/*.c)
+SERVER_SRC = src/server.c src/parser.c src/executor.c src/shell_loop.c $(wildcard src/custom/*.c)
 SERVER_SRC := $(filter-out src/custom/test_program.c,$(SERVER_SRC))
 
 CLIENT_SRC = src/client.c

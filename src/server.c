@@ -4,39 +4,64 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include "shell.h"
+#include <sys/wait.h>
 #include <pthread.h>
-#include "scheduler.h"
-
+#include "shell.h"
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
 
-static Scheduler g_scheduler;
-
-void handle_client(int client_fd);
-
 static int send_all(int fd, const char *buf, size_t len) {
     size_t sent = 0;
-
     while (sent < len) {
         ssize_t n = send(fd, buf + sent, len - sent, 0);
-        if (n <= 0) {
-            return 0;
-        }
+        if (n <= 0) return 0;
         sent += (size_t)n;
     }
-
     return 1;
 }
 
-void *client_thread(void *arg) {
-    int client_fd = *(int *)arg;
-    free(arg);
+static int execute_and_send(int client_fd, const char *command) {
+    int pipefd[2];
+    pid_t pid;
 
-    handle_client(client_fd);
+    if (pipe(pipefd) != 0) {
+        perror("pipe");
+        return 0;
+    }
 
-    return NULL;
+    pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        close(pipefd[0]); close(pipefd[1]);
+        return 0;
+    }
+
+    if (pid == 0) {
+        /* child: redirect stdout/stderr to pipe and run command */
+        close(pipefd[0]);
+        if (dup2(pipefd[1], STDOUT_FILENO) < 0) _exit(1);
+        if (dup2(pipefd[1], STDERR_FILENO) < 0) _exit(1);
+        close(pipefd[1]);
+        process_input((char *)command);
+        fflush(stdout); fflush(stderr);
+        _exit(0);
+    }
+
+    /* parent: read from pipe and forward to client socket */
+    close(pipefd[1]);
+    char buf[BUFFER_SIZE];
+    ssize_t n;
+    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+        if (!send_all(client_fd, buf, (size_t)n)) break;
+    }
+    close(pipefd[0]);
+
+    /* wait for child to finish */
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    return 1;
 }
 
 int setup_server_socket(int port) {
@@ -47,6 +72,9 @@ int setup_server_socket(int port) {
         perror("Socket failed");
         exit(EXIT_FAILURE);
     }
+
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
@@ -82,9 +110,8 @@ int accept_client(int server_fd) {
 }
 
 void handle_client(int client_fd) {
-    char buffer[1024];
+    char buffer[BUFFER_SIZE];
     int n;
-    Job *job;
 
     memset(buffer, 0, sizeof(buffer));
 
@@ -97,34 +124,27 @@ void handle_client(int client_fd) {
     buffer[n] = '\0';
     buffer[strcspn(buffer, "\r\n")] = '\0';
 
-    job = scheduler_submit(&g_scheduler, client_fd, buffer);
-    if (job == NULL) {
-        const char *msg = "scheduler: failed to queue job\n";
-        send_all(client_fd, msg, strlen(msg));
-        close(client_fd);
-        return;
+    if (!execute_and_send(client_fd, buffer)) {
+        const char *err = "server: failed to execute command\n";
+        send_all(client_fd, err, strlen(err));
     }
-
-    scheduler_wait(job);
-
-    if (job->output != NULL && job->output_len > 0) {
-        send_all(client_fd, job->output, job->output_len);
-    }
-
-    scheduler_destroy_job(job);
 
     close(client_fd);
 }
 
-int main() {
-    if (!scheduler_init(&g_scheduler, DEFAULT_QUANTUM_MS)) {
-        fprintf(stderr, "Failed to initialize scheduler\n");
-        return 1;
-    }
+void *client_thread(void *arg) {
+    int client_fd = *(int *)arg;
+    free(arg);
 
+    handle_client(client_fd);
+
+    return NULL;
+}
+
+int main() {
     int server_fd = setup_server_socket(PORT);
 
- while (1) {
+    while (1) {
         int client_fd = accept_client(server_fd);
 
         if (client_fd < 0) {
@@ -152,8 +172,6 @@ int main() {
         pthread_detach(tid);
     }
 
-
     close(server_fd);
-    scheduler_shutdown(&g_scheduler);
     return 0;
 }
