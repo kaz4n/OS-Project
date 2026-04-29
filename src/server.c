@@ -7,16 +7,36 @@
 #include <sys/wait.h>
 #include <pthread.h>
 #include <time.h>
+#include <stdarg.h>
 #include "shell.h"
 #include "scheduler.h"
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
+#define END_OF_OUTPUT_MARKER "\n<<END_OF_OUTPUT>>\n"
+
+typedef struct {
+    int client_fd;
+    int session_id;
+    char ip[INET_ADDRSTRLEN];
+    int port;
+} ClientContext;
 
 /* Global job queue */
 static JobQueue *global_queue = NULL;
 static pthread_mutex_t session_id_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int next_session_id = 1;
+
+static void log_printf(const char *fmt, ...) {
+    va_list args;
+    pthread_mutex_lock(&log_mutex);
+    va_start(args, fmt);
+    vprintf(fmt, args);
+    va_end(args);
+    fflush(stdout);
+    pthread_mutex_unlock(&log_mutex);
+}
 
 static int send_all(int fd, const char *buf, size_t len) {
     size_t sent = 0;
@@ -28,6 +48,10 @@ static int send_all(int fd, const char *buf, size_t len) {
     return 1;
 }
 
+static void send_end_marker(int fd) {
+    send_all(fd, END_OF_OUTPUT_MARKER, strlen(END_OF_OUTPUT_MARKER));
+}
+
 /* forward declaration to avoid implicit declaration in job_worker */
 static int execute_and_send_with_scheduler(int client_fd, SchedulerJob *job);
 
@@ -36,7 +60,11 @@ static void *job_worker(void *arg) {
     SchedulerJob *job = (SchedulerJob *)arg;
     if (!job) return NULL;
 
-    execute_and_send_with_scheduler(job->client_fd, job);
+    if (!execute_and_send_with_scheduler(job->client_fd, job)) {
+        const char *err = "server: failed to execute command\n";
+        send_all(job->client_fd, err, strlen(err));
+        send_end_marker(job->client_fd);
+    }
 
     free(job);
     return NULL;
@@ -110,6 +138,7 @@ static int execute_and_send_with_scheduler(int client_fd, SchedulerJob *job) {
              job->job_id, wait_ms, runtime_ms, TIME_QUANTUM_MS, WEXITSTATUS(status));
 
     send_all(client_fd, scheduler_info, strlen(scheduler_info));
+    send_end_marker(client_fd);
 
     return 1;
 }
@@ -133,6 +162,7 @@ void* dispatcher_thread(void *arg) {
         if (job_copy == NULL) {
             const char *err = "server: failed to allocate job worker\n";
             send_all(job.client_fd, err, strlen(err));
+            send_end_marker(job.client_fd);
             continue;
         }
         *job_copy = job;
@@ -141,6 +171,7 @@ void* dispatcher_thread(void *arg) {
         if (pthread_create(&worker_tid, NULL, job_worker, job_copy) != 0) {
             const char *err = "server: failed to create job worker thread\n";
             send_all(job.client_fd, err, strlen(err));
+            send_end_marker(job.client_fd);
             free(job_copy);
             continue;
         }
@@ -183,31 +214,25 @@ int setup_server_socket(int port) {
     return server_fd;
 }
 
-int accept_client(int server_fd) {
-    int client_fd;
-    struct sockaddr_in client_addr;
-    socklen_t addrlen = sizeof(client_addr);
-
-    client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addrlen);
-    if (client_fd < 0) {
-        perror("Accept failed");
-        return -1;
-    }
-
-    return client_fd;
-}
-
-void handle_client(int client_fd) {
+void handle_client(ClientContext *ctx) {
     char buffer[BUFFER_SIZE];
     int n;
     ShellSession session;
+    int client_fd = ctx->client_fd;
 
-    pthread_mutex_lock(&session_id_mutex);
-    int session_id = next_session_id++;
-    pthread_mutex_unlock(&session_id_mutex);
-
-    shell_session_init(&session, client_fd, session_id);
+    shell_session_init(&session, client_fd, ctx->session_id);
     shell_session_set_current(&session);
+
+    log_printf("Client %d connected from %s:%d\n", ctx->session_id, ctx->ip, ctx->port);
+
+    {
+        char welcome[256];
+        snprintf(welcome, sizeof(welcome),
+                 "Welcome to remote shell. Your Client ID is %d.\n",
+                 ctx->session_id);
+        send_all(client_fd, welcome, strlen(welcome));
+        send_end_marker(client_fd);
+    }
     
     /* Keep connection alive and process multiple commands until client exits */
     while (1) {
@@ -223,7 +248,7 @@ void handle_client(int client_fd) {
         buffer[strcspn(buffer, "\r\n")] = '\0';
 
         /* Log client command on server stdout */
-        printf("Server Output: [Client %d] Command: %s\n", session.session_id, buffer);
+        log_printf("Server Output: [Client %d] Command: %s\n", session.session_id, buffer);
 
         char parse_buffer[BUFFER_SIZE];
         strncpy(parse_buffer, buffer, sizeof(parse_buffer) - 1);
@@ -247,6 +272,7 @@ void handle_client(int client_fd) {
                          "\n[scheduler] job=0 wait_ms=0 runtime_ms=%ld quantum_ms=%d exit=0\n",
                          cd_runtime_ms, TIME_QUANTUM_MS);
                 send_all(client_fd, scheduler_info, strlen(scheduler_info));
+                send_end_marker(client_fd);
                 continue;
             }
 
@@ -260,18 +286,24 @@ void handle_client(int client_fd) {
         if (job_id < 0) {
             const char *err = "server: job queue full\n";
             send_all(client_fd, err, strlen(err));
+            send_end_marker(client_fd);
         }
     }
+
+    log_printf("Client %d disconnected from %s:%d\n", ctx->session_id, ctx->ip, ctx->port);
 
     shell_session_set_current(NULL);
     close(client_fd);
 }
 
 void *client_thread(void *arg) {
-    int client_fd = *(int *)arg;
-    free(arg);
+    ClientContext *ctx = (ClientContext *)arg;
+    if (ctx == NULL) {
+        return NULL;
+    }
 
-    handle_client(client_fd);
+    handle_client(ctx);
+    free(ctx);
 
     return NULL;
 }
@@ -296,33 +328,43 @@ int main() {
     pthread_detach(dispatcher_tid);
 
     int server_fd = setup_server_socket(PORT);
-    printf("Server listening on port %d\n", PORT);
-    printf("Dispatcher thread started for job scheduling\n");
+    log_printf("Server listening on port %d\n", PORT);
+    log_printf("Dispatcher thread started for job scheduling\n");
 
     while (1) {
-        int client_fd = accept_client(server_fd);
+        struct sockaddr_in client_addr;
+        socklen_t addrlen = sizeof(client_addr);
+        int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addrlen);
 
         if (client_fd < 0) {
+            perror("Accept failed");
             continue;
         }
 
-        printf("New client connected\n");
-
         pthread_t tid;
-        int *pclient = malloc(sizeof(int));
+        ClientContext *ctx = malloc(sizeof(ClientContext));
 
-        if (pclient == NULL) {
+        if (ctx == NULL) {
             perror("malloc failed");
             close(client_fd);
             continue;
         }
 
-        *pclient = client_fd;
+        pthread_mutex_lock(&session_id_mutex);
+        ctx->session_id = next_session_id++;
+        pthread_mutex_unlock(&session_id_mutex);
 
-        if (pthread_create(&tid, NULL, client_thread, pclient) != 0) {
+        ctx->client_fd = client_fd;
+        ctx->port = ntohs(client_addr.sin_port);
+        if (inet_ntop(AF_INET, &client_addr.sin_addr, ctx->ip, sizeof(ctx->ip)) == NULL) {
+            strncpy(ctx->ip, "unknown", sizeof(ctx->ip) - 1);
+            ctx->ip[sizeof(ctx->ip) - 1] = '\0';
+        }
+
+        if (pthread_create(&tid, NULL, client_thread, ctx) != 0) {
             perror("pthread_create failed");
             close(client_fd);
-            free(pclient);
+            free(ctx);
             continue;
         }
 
