@@ -7,9 +7,55 @@
 #include <stdio.h>
 #include "shell.h"
 
+static _Thread_local ShellSession *current_session = NULL;
+
+void shell_session_init(ShellSession *session, int socket_fd, int session_id)
+{
+    if (session == NULL)
+    {
+        return;
+    }
+
+    session->socket_fd = socket_fd;
+    session->session_id = session_id;
+    session->previous_cwd[0] = '\0';
+
+    if (getcwd(session->cwd, sizeof(session->cwd)) == NULL)
+    {
+        strncpy(session->cwd, ".", sizeof(session->cwd) - 1);
+        session->cwd[sizeof(session->cwd) - 1] = '\0';
+    }
+}
+
+void shell_session_set_current(ShellSession *session)
+{
+    current_session = session;
+}
+
+ShellSession *shell_session_current(void)
+{
+    return current_session;
+}
+
+const char *shell_session_cwd(void)
+{
+    ShellSession *session = shell_session_current();
+
+    if (session != NULL && session->cwd[0] != '\0')
+    {
+        return session->cwd;
+    }
+
+    return NULL;
+}
+
 void start_shell_loop(void)
 {
     char *input_line;
+    ShellSession local_session;
+
+    shell_session_init(&local_session, -1, 0);
+    shell_session_set_current(&local_session);
 
     while (1)
     {
@@ -39,6 +85,7 @@ void print_shell_name(void)
 {
     char cwd[1024];
     char hostname[256];
+    const char *session_cwd = shell_session_cwd();
 
     if (gethostname(hostname, sizeof(hostname)) != 0)
     {
@@ -46,7 +93,11 @@ void print_shell_name(void)
     }
     hostname[sizeof(hostname) - 1] = '\0';
 
-    if (getcwd(cwd, sizeof(cwd)) != NULL)
+    if (session_cwd != NULL)
+    {
+        printf("%s:%s> ", hostname, session_cwd);
+    }
+    else if (getcwd(cwd, sizeof(cwd)) != NULL)
     {
         printf("%s:%s> ", hostname, cwd);
     }
@@ -164,7 +215,7 @@ void process_input(char *input_line)
  
         if (strcmp(cmd, "cd") == 0)
         {
-            handle_cd(&pipeline.commands[0]);
+            handle_cd_session(&pipeline.commands[0], shell_session_current());
             return;
         }
 

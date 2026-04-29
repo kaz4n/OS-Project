@@ -40,6 +40,14 @@ void execute_pipeline(Pipeline *pipeline)
 
         if (pids[i] == 0)
         {
+            const char *session_cwd = shell_session_cwd();
+
+            if (session_cwd != NULL && chdir(session_cwd) != 0)
+            {
+                perror("chdir");
+                exit(1);
+            }
+
             if (i > 0)
             {
                 if (dup2(pipes[i - 1][0], STDIN_FILENO) == -1)

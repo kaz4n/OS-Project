@@ -15,6 +15,8 @@
 
 /* Global job queue */
 static JobQueue *global_queue = NULL;
+static pthread_mutex_t session_id_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int next_session_id = 1;
 
 static int send_all(int fd, const char *buf, size_t len) {
     size_t sent = 0;
@@ -54,6 +56,10 @@ static int execute_and_send_with_scheduler(int client_fd, SchedulerJob *job) {
     if (pid == 0) {
         /* child: redirect stdout/stderr to pipe and run command */
         close(pipefd[0]);
+        if (job->cwd[0] != '\0' && chdir(job->cwd) != 0) {
+            perror("chdir");
+            _exit(1);
+        }
         if (dup2(pipefd[1], STDOUT_FILENO) < 0) _exit(1);
         if (dup2(pipefd[1], STDERR_FILENO) < 0) _exit(1);
         close(pipefd[1]);
@@ -167,6 +173,14 @@ int accept_client(int server_fd) {
 void handle_client(int client_fd) {
     char buffer[BUFFER_SIZE];
     int n;
+    ShellSession session;
+
+    pthread_mutex_lock(&session_id_mutex);
+    int session_id = next_session_id++;
+    pthread_mutex_unlock(&session_id_mutex);
+
+    shell_session_init(&session, client_fd, session_id);
+    shell_session_set_current(&session);
     
     /* Keep connection alive and process multiple commands until client exits */
     while (1) {
@@ -181,19 +195,33 @@ void handle_client(int client_fd) {
         buffer[n] = '\0';
         buffer[strcspn(buffer, "\r\n")] = '\0';
 
-        /* Check if client wants to exit */
-        if (strncmp(buffer, "exit", 4) == 0) {
-            break;
+        char parse_buffer[BUFFER_SIZE];
+        strncpy(parse_buffer, buffer, sizeof(parse_buffer) - 1);
+        parse_buffer[sizeof(parse_buffer) - 1] = '\0';
+
+        Pipeline pipeline;
+        if (parse_input(parse_buffer, &pipeline) && pipeline.num_commands == 1) {
+            char *cmd = pipeline.commands[0].argv[0];
+
+            if (strcmp(cmd, "cd") == 0 || strcmp(cmd, "cd_new") == 0) {
+                handle_cd_session(&pipeline.commands[0], &session);
+                continue;
+            }
+
+            if (strcmp(cmd, "exit") == 0 || strcmp(cmd, "exit_new") == 0) {
+                break;
+            }
         }
 
         /* Enqueue job to scheduler */
-        int job_id = queue_enqueue(global_queue, buffer, client_fd);
+        int job_id = queue_enqueue(global_queue, buffer, client_fd, session.cwd, session.session_id);
         if (job_id < 0) {
             const char *err = "server: job queue full\n";
             send_all(client_fd, err, strlen(err));
         }
     }
 
+    shell_session_set_current(NULL);
     close(client_fd);
 }
 

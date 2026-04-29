@@ -21,15 +21,24 @@ void queue_destroy(JobQueue *q) {
     free(q);
 }
 
-int queue_enqueue(JobQueue *q, const char *cmd, int fd) {
+int queue_enqueue(JobQueue *q, const char *cmd, int fd, const char *cwd, int session_id) {
     if (!q || !cmd) return -1;
     pthread_mutex_lock(&q->mutex);
     if (q->count >= MAX_JOBS) { pthread_mutex_unlock(&q->mutex); return -1; }
     SchedulerJob *j = &q->jobs[q->tail];
     j->job_id = q->count + 1;
     strncpy(j->command, cmd, sizeof(j->command) - 1);
+    j->command[sizeof(j->command) - 1] = '\0';
     j->client_fd = fd;
+    j->session_id = session_id;
+    if (cwd != NULL) {
+        strncpy(j->cwd, cwd, sizeof(j->cwd) - 1);
+        j->cwd[sizeof(j->cwd) - 1] = '\0';
+    } else {
+        j->cwd[0] = '\0';
+    }
     j->completed = 0;
+    j->exit_code = 0;
     clock_gettime(CLOCK_MONOTONIC, &j->submit_time);
     pthread_cond_init(&j->completion_cond, NULL);
     q->tail = (q->tail + 1) % MAX_JOBS;
