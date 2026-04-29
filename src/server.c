@@ -6,10 +6,15 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <pthread.h>
+#include <time.h>
 #include "shell.h"
+#include "scheduler.h"
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
+
+/* Global job queue */
+static JobQueue *global_queue = NULL;
 
 static int send_all(int fd, const char *buf, size_t len) {
     size_t sent = 0;
@@ -21,7 +26,12 @@ static int send_all(int fd, const char *buf, size_t len) {
     return 1;
 }
 
-static int execute_and_send(int client_fd, const char *command) {
+/**
+ * Execute command in child process and send output + scheduler metadata to client
+ * Tracks timing information: wait_ms (time from submission to execution start),
+ * runtime_ms (time from execution start to completion), and quantum_ms (time quantum)
+ */
+static int execute_and_send_with_scheduler(int client_fd, SchedulerJob *job) {
     int pipefd[2];
     pid_t pid;
 
@@ -29,6 +39,10 @@ static int execute_and_send(int client_fd, const char *command) {
         perror("pipe");
         return 0;
     }
+
+    /* Record when execution starts */
+    struct timespec exec_start;
+    clock_gettime(CLOCK_MONOTONIC, &exec_start);
 
     pid = fork();
     if (pid < 0) {
@@ -43,7 +57,7 @@ static int execute_and_send(int client_fd, const char *command) {
         if (dup2(pipefd[1], STDOUT_FILENO) < 0) _exit(1);
         if (dup2(pipefd[1], STDERR_FILENO) < 0) _exit(1);
         close(pipefd[1]);
-        process_input((char *)command);
+        process_input(job->command);
         fflush(stdout); fflush(stderr);
         _exit(0);
     }
@@ -61,7 +75,48 @@ static int execute_and_send(int client_fd, const char *command) {
     int status = 0;
     waitpid(pid, &status, 0);
 
+    /* Record when execution ends */
+    struct timespec exec_end;
+    clock_gettime(CLOCK_MONOTONIC, &exec_end);
+
+    /* Calculate timing metrics */
+    long wait_ms = get_elapsed_ms(job->submit_time, exec_start);
+    long runtime_ms = get_elapsed_ms(exec_start, exec_end);
+
+    /* Send scheduler metadata to client */
+    char scheduler_info[256];
+    snprintf(scheduler_info, sizeof(scheduler_info),
+             "\n[scheduler] job=%d wait_ms=%ld runtime_ms=%ld quantum_ms=%d exit=%d\n",
+             job->job_id, wait_ms, runtime_ms, TIME_QUANTUM_MS, WEXITSTATUS(status));
+
+    send_all(client_fd, scheduler_info, strlen(scheduler_info));
+
     return 1;
+}
+
+/**
+ * Dispatcher thread: processes jobs from the queue and executes them
+ * One dispatcher thread runs continuously, taking jobs from queue and executing them
+ */
+void* dispatcher_thread(void *arg) {
+    SchedulerJob job;
+
+    while (1) {
+        /* Dequeue a job (blocks if queue is empty) */
+        if (!queue_dequeue(global_queue, &job)) {
+            continue;
+        }
+
+        /* Execute the job with scheduler timing */
+        if (!execute_and_send_with_scheduler(job.client_fd, &job)) {
+            const char *err = "server: failed to execute command\n";
+            send_all(job.client_fd, err, strlen(err));
+        }
+
+        /* Note: socket remains open for persistent connection */
+    }
+
+    return NULL;
 }
 
 int setup_server_socket(int port) {
@@ -112,21 +167,31 @@ int accept_client(int server_fd) {
 void handle_client(int client_fd) {
     char buffer[BUFFER_SIZE];
     int n;
+    
+    /* Keep connection alive and process multiple commands until client exits */
+    while (1) {
+        memset(buffer, 0, sizeof(buffer));
 
-    memset(buffer, 0, sizeof(buffer));
+        n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+        if (n <= 0) {
+            /* Client disconnected */
+            break;
+        }
 
-    n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
-    if (n <= 0) {
-        close(client_fd);
-        return;
-    }
+        buffer[n] = '\0';
+        buffer[strcspn(buffer, "\r\n")] = '\0';
 
-    buffer[n] = '\0';
-    buffer[strcspn(buffer, "\r\n")] = '\0';
+        /* Check if client wants to exit */
+        if (strncmp(buffer, "exit", 4) == 0) {
+            break;
+        }
 
-    if (!execute_and_send(client_fd, buffer)) {
-        const char *err = "server: failed to execute command\n";
-        send_all(client_fd, err, strlen(err));
+        /* Enqueue job to scheduler */
+        int job_id = queue_enqueue(global_queue, buffer, client_fd);
+        if (job_id < 0) {
+            const char *err = "server: job queue full\n";
+            send_all(client_fd, err, strlen(err));
+        }
     }
 
     close(client_fd);
@@ -142,7 +207,27 @@ void *client_thread(void *arg) {
 }
 
 int main() {
+    /* Initialize the job queue for the scheduler */
+    global_queue = queue_init();
+    if (!global_queue) {
+        fprintf(stderr, "Failed to initialize job queue\n");
+        return EXIT_FAILURE;
+    }
+
+    /* Create dispatcher thread to process jobs from the queue */
+    pthread_t dispatcher_tid;
+    if (pthread_create(&dispatcher_tid, NULL, dispatcher_thread, NULL) != 0) {
+        perror("pthread_create dispatcher failed");
+        queue_destroy(global_queue);
+        return EXIT_FAILURE;
+    }
+
+    /* Dispatcher thread runs indefinitely */
+    pthread_detach(dispatcher_tid);
+
     int server_fd = setup_server_socket(PORT);
+    printf("Server listening on port %d\n", PORT);
+    printf("Dispatcher thread started for job scheduling\n");
 
     while (1) {
         int client_fd = accept_client(server_fd);
@@ -150,6 +235,8 @@ int main() {
         if (client_fd < 0) {
             continue;
         }
+
+        printf("New client connected\n");
 
         pthread_t tid;
         int *pclient = malloc(sizeof(int));
@@ -173,5 +260,6 @@ int main() {
     }
 
     close(server_fd);
+    queue_destroy(global_queue);
     return 0;
 }

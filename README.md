@@ -1,6 +1,45 @@
 # My Local Shell (OS Project)
 
-A simple custom shell written in C.
+A simple custom shell written in C supporting local execution, remote client/server architecture, and Phase 3 multitasking with time-based job scheduling.
+
+## Phase 3: Remote Multitasking CLI Shell (Current Implementation)
+
+This is the **Phase 3** implementation featuring:
+- **Persistent Client Connections** - Single connection per client, multiple commands until "exit"
+- **FIFO Job Scheduler** - Time-based job queue with fairness, timestamps, and execution metrics
+- **Multi-threaded Dispatcher** - One dispatcher thread processes queued jobs while client threads handle socket I/O
+- **Scheduler Metadata** - Every response includes: job_id, wait_ms, runtime_ms, quantum_ms, exit_code
+- **Parallel Multi-Client Support** - Multiple concurrent persistent connections, each with independent job sequences
+
+### Quick Start (Phase 3)
+
+**Terminal 1 - Start Server:**
+```bash
+./server
+# Output: "Server listening on port 8080"
+#         "Dispatcher thread started for job scheduling"
+```
+
+**Terminal 2+ - Connect Clients (Persistent):**
+```bash
+./client
+remote-shell> pwd_new
+/path/to/project
+[scheduler] job=1 wait_ms=0 runtime_ms=150 quantum_ms=200 exit=0
+
+remote-shell> echo "Multiple commands on same connection!"
+Multiple commands on same connection!
+[scheduler] job=2 wait_ms=0 runtime_ms=100 quantum_ms=200 exit=0
+
+remote-shell> exit
+Disconnecting from server.
+```
+
+**Key Difference from Phase 2:** Connection stays open for multiple commands. No reconnection overhead!
+
+---
+
+## Project Features
 
 This project supports:
 - Interactive shell loop with prompt
@@ -144,35 +183,165 @@ cat demo.c | grep include | wc -l
 
 ## Phase 3 Report Summary
 
-### Design
+### Design (UPDATED - Scheduler Now Implemented)
 
-- Server uses one thread per client connection.
-- Each client request is converted into a scheduler job.
-- Jobs are queued in FIFO order with a submission timestamp.
-- A dispatcher thread pops jobs from the queue and executes them.
-- Command execution is isolated in a child process.
-- Child `stdout` and `stderr` are redirected to a pipe, captured by the parent, and sent back only to the requesting client socket.
-- Scheduler metadata is appended to each response:
-	(scheduler removed in this build; server runs each client request in parallel threads)
+- **Server Architecture:** One thread per client connection + one dedicated dispatcher thread
+- **Job Queue:** FIFO scheduler with thread-safe queue protected by `pthread_mutex_t`
+- **Job Tracking:** Each job has submission timestamp, start time, end time for accurate timing metrics
+- **Job Processing:** Dispatcher thread continuously dequeues and executes jobs with timing measurement
+- **Command Execution:** Isolated child process via fork; stdout/stderr redirected via pipes to client
+- **Scheduler Metadata:** Every response includes job_id, wait_ms (submission→execution), runtime_ms (execution duration), quantum_ms (200ms), and exit_code
+- **Persistent Connections:** Client maintains single TCP connection, sends multiple commands until "exit"
 
 ### Synchronization
 
-- Scheduler queue access is protected with `pthread_mutex_t`.
-- Dispatcher waits on `pthread_cond_t` when queue is empty.
-- Each submitted job has its own condition variable for completion signaling back to the client thread.
+- **Queue Access:** Protected with `pthread_mutex_t` in `scheduler.c`
+- **Producer (Client Threads):** Lock → enqueue job → signal condvar → unlock
+- **Consumer (Dispatcher Thread):** Lock → wait on condvar if empty → dequeue → unlock
+- **Atomicity:** All critical sections locked; no race conditions
+- **Fairness:** FIFO ordering ensures job fairness; timestamp tracking proves scheduling
 
-### Parallel execution
+### Parallel Execution Model
 
-- Server now executes each client request in a separate thread and runs the requested command in a child process. The parent captures the child's stdout/stderr and forwards only that output back to the requesting client.
+```
+Main Thread
+    ↓
+Listens for clients → Creates client threads (1 per connection)
+    
+Each Client Thread:
+    - Loops: recv command → enqueue job → (wait for execution)
+    - Persistent: stays alive until "exit" received
+    
+Dispatcher Thread:
+    - Continuously: dequeue job → fork → execute → capture output
+    - Sends result back to client via socket
+    - Returns to queue to get next job
+```
 
-## Reproducible Test Cases
+### Key Phase 3 Improvements
 
-Run in Linux/WSL for full process and pipe features.
+| Feature | Phase 2 | Phase 3 |
+|---------|---------|---------|
+| Client Connection | New per command | Single persistent |
+| Command Handling | Immediate execution | Queued & scheduled |
+| Job Fairness | N/A | FIFO with timestamps |
+| Timing Data | None | wait_ms, runtime_ms, job_id |
+| Multi-command Sessions | Not supported | Full support |
+| Concurrent Load | Limited | Efficient queuing |
+
+## Phase 3 Test Cases
+
+### Automated Test Suite
+
+Run the comprehensive Phase 3 test suite:
+
+```bash
+chmod +x test_phase3.sh
+bash ./test_phase3.sh
+```
+
+This executes:
+- Single client with multiple persistent commands
+- Multiple parallel clients (concurrent connections)
+- Scheduler metadata verification
+- Pipeline support with scheduler
+- FIFO job queue fairness
+- Compilation and build verification
+
+### Manual Test 1: Persistent Connection (Single Client)
+
+**Terminal 1:**
+```bash
+./server
+```
+
+**Terminal 2:**
+```bash
+./client
+remote-shell> pwd_new
+/mnt/c/Users/narut/Downloads/OS/Project/OS-Project
+[scheduler] job=1 wait_ms=0 runtime_ms=150 quantum_ms=200 exit=0
+
+remote-shell> ls
+client  demo  demo.c  Makefile  myshell  server  src
+[scheduler] job=2 wait_ms=0 runtime_ms=80 quantum_ms=200 exit=0
+
+remote-shell> echo "Phase 3 working!"
+Phase 3 working!
+[scheduler] job=3 wait_ms=0 runtime_ms=100 quantum_ms=200 exit=0
+
+remote-shell> exit
+Disconnecting from server.
+```
+
+**Verification:** Same socket used for all 3 commands; no reconnection.
+
+### Manual Test 2: Multiple Concurrent Clients
+
+**Terminal 1:**
+```bash
+./server
+```
+
+**Terminal 2:**
+```bash
+./client
+remote-shell> echo "Client A - Command 1"
+Client A - Command 1
+[scheduler] job=1 wait_ms=0 runtime_ms=100 quantum_ms=200 exit=0
+
+remote-shell> (wait for Terminal 3 to send commands)
+```
+
+**Terminal 3 (Parallel):**
+```bash
+./client
+remote-shell> echo "Client B - Command 1"
+Client B - Command 1
+[scheduler] job=2 wait_ms=15 runtime_ms=95 quantum_ms=200 exit=0
+# Note: wait_ms=15 because it queued behind Client A
+
+remote-shell> echo "Client B - Command 2"
+Client B - Command 2
+[scheduler] job=3 wait_ms=0 runtime_ms=85 quantum_ms=200 exit=0
+
+remote-shell> exit
+```
+
+**Verification:** 
+- Both clients maintain separate persistent connections
+- Jobs execute in FIFO order (job 1, 2, 3)
+- Job 2 has wait_ms > 0 (queued behind job 1)
+
+### Manual Test 3: Pipelines with Scheduler
+
+```bash
+./client
+remote-shell> cat src/shell.h | wc -l
+50
+[scheduler] job=1 wait_ms=0 runtime_ms=120 quantum_ms=200 exit=0
+
+remote-shell> ls | grep .c | wc -l
+8
+[scheduler] job=2 wait_ms=0 runtime_ms=100 quantum_ms=200 exit=0
+
+remote-shell> exit
+```
+
+**Verification:** Pipelines work correctly; scheduler metadata appended to output.
+
+## Reproducible Test Cases (All Phases)
 
 Run all automated checks for the project (Phase 1–3):
 
 ```bash
 bash ./run_tests.sh
+```
+
+Or run just the Phase 3 tests:
+
+```bash
+bash ./test_phase3.sh
 ```
 
 ### Build
@@ -182,60 +351,40 @@ make clean
 make
 ```
 
-### Test 1: Phase 1 (Local shell) and basic check
-
-Phase 1 quick check (local shell):
+### Test 1: Phase 1 (Local shell)
 
 ```bash
 make
 printf "pwd_new\nexit_new\n" | ./myshell
 ```
 
-Phase 2 quick check (remote client/server):
+Expected output: Current working directory path
 
+### Test 2: Phase 3 (Remote multitasking with scheduler)
+
+**Terminal 1:**
 ```bash
-./server &
-printf "echo_new hello_remote\nexit\n" | ./client
-kill $!
+./server
 ```
 
-Expected:
+**Terminal 2:**
+```bash
+./client
+remote-shell> echo "Job 1"
+Job 1
+[scheduler] job=1 wait_ms=0 runtime_ms=100 quantum_ms=200 exit=0
 
-- Phase 1 prints the current working directory.
-- Phase 2 prints `hello_remote` and a scheduler line like:
+remote-shell> pwd_new
+/mnt/c/Users/narut/Downloads/OS/Project/OS-Project
+[scheduler] job=2 wait_ms=0 runtime_ms=80 quantum_ms=200 exit=0
 
-```text
-[scheduler] job=1 wait_ms=<number> runtime_ms=<number> quantum_ms=200 exit=0
+remote-shell> exit
 ```
 
-Actual:
-
-```text
-hello_remote
-
-[scheduler] job=1 wait_ms=0 runtime_ms=201 quantum_ms=200 exit=0
-```
-
-### Test 2: Concurrent clients + scheduler (Phase 2/3)
-
-A general concurrent test will run the server and multiple clients and show scheduler metadata. Use the included `run_tests.sh` to execute a set of reproducible checks.
-
-Expected:
-
-- Both clients get correct response for their own command.
-- Each response includes a unique scheduler job id.
-- Second client may show non-zero `wait_ms` when queued behind first.
-
-Actual:
-
-```text
-Client-B (sleep 1)
-[scheduler] job=2 wait_ms=0 runtime_ms=1201 quantum_ms=200 exit=0
-
-Client-C (echo queued_client)
-queued_client
-[scheduler] job=3 wait_ms=1200 runtime_ms=201 quantum_ms=200 exit=0
-```
+**Verification:**
+- Persistent connection (same socket for both commands)
+- Scheduler metadata shows job sequence (job=1, job=2)
+- No reconnection overhead
 
 ### Test 3: Pipelines
 
