@@ -28,6 +28,20 @@ static int send_all(int fd, const char *buf, size_t len) {
     return 1;
 }
 
+/* forward declaration to avoid implicit declaration in job_worker */
+static int execute_and_send_with_scheduler(int client_fd, SchedulerJob *job);
+
+/* Worker thread that executes a single job concurrently */
+static void *job_worker(void *arg) {
+    SchedulerJob *job = (SchedulerJob *)arg;
+    if (!job) return NULL;
+
+    execute_and_send_with_scheduler(job->client_fd, job);
+
+    free(job);
+    return NULL;
+}
+
 /**
  * Execute command in child process and send output + scheduler metadata to client
  * Tracks timing information: wait_ms (time from submission to execution start),
@@ -105,6 +119,7 @@ static int execute_and_send_with_scheduler(int client_fd, SchedulerJob *job) {
  * One dispatcher thread runs continuously, taking jobs from queue and executing them
  */
 void* dispatcher_thread(void *arg) {
+    (void)arg; /* silence unused parameter warning */
     SchedulerJob job;
 
     while (1) {
@@ -113,13 +128,25 @@ void* dispatcher_thread(void *arg) {
             continue;
         }
 
-        /* Execute the job with scheduler timing */
-        if (!execute_and_send_with_scheduler(job.client_fd, &job)) {
-            const char *err = "server: failed to execute command\n";
+        /* Run each job in its own detached thread so jobs execute concurrently */
+        SchedulerJob *job_copy = malloc(sizeof(SchedulerJob));
+        if (job_copy == NULL) {
+            const char *err = "server: failed to allocate job worker\n";
             send_all(job.client_fd, err, strlen(err));
+            continue;
         }
+        *job_copy = job;
 
-        /* Note: socket remains open for persistent connection */
+        pthread_t worker_tid;
+        if (pthread_create(&worker_tid, NULL, job_worker, job_copy) != 0) {
+            const char *err = "server: failed to create job worker thread\n";
+            send_all(job.client_fd, err, strlen(err));
+            free(job_copy);
+            continue;
+        }
+        pthread_detach(worker_tid);
+
+        /* Note: socket remains open for persistent connection; job runs concurrently */
     }
 
     return NULL;
@@ -195,6 +222,9 @@ void handle_client(int client_fd) {
         buffer[n] = '\0';
         buffer[strcspn(buffer, "\r\n")] = '\0';
 
+        /* Log client command on server stdout */
+        printf("Server Output: [Client %d] Command: %s\n", session.session_id, buffer);
+
         char parse_buffer[BUFFER_SIZE];
         strncpy(parse_buffer, buffer, sizeof(parse_buffer) - 1);
         parse_buffer[sizeof(parse_buffer) - 1] = '\0';
@@ -204,7 +234,19 @@ void handle_client(int client_fd) {
             char *cmd = pipeline.commands[0].argv[0];
 
             if (strcmp(cmd, "cd") == 0 || strcmp(cmd, "cd_new") == 0) {
+                struct timespec cd_start, cd_end;
+                clock_gettime(CLOCK_MONOTONIC, &cd_start);
                 handle_cd_session(&pipeline.commands[0], &session);
+
+                clock_gettime(CLOCK_MONOTONIC, &cd_end);
+                long cd_runtime_ms = get_elapsed_ms(cd_start, cd_end);
+
+                /* Direct session commands still send scheduler footer so client doesn't block. */
+                char scheduler_info[256];
+                snprintf(scheduler_info, sizeof(scheduler_info),
+                         "\n[scheduler] job=0 wait_ms=0 runtime_ms=%ld quantum_ms=%d exit=0\n",
+                         cd_runtime_ms, TIME_QUANTUM_MS);
+                send_all(client_fd, scheduler_info, strlen(scheduler_info));
                 continue;
             }
 

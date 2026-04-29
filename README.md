@@ -79,7 +79,7 @@ sudo apt install build-essential
 
 ```bash
 git clone <your-repo-url>
-cd "OS Project"
+cd "OS-Project"
 ```
 
 ### 2. Build

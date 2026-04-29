@@ -42,7 +42,8 @@ int connect_to_server(const char *ip, int port) {
         return -1;
     }
 
-    /* Set receive timeout to allow responsive multi-command handling */
+    /* Set a short receive timeout to keep the client responsive when server closes connection unexpectedly.
+       We will still wait for the scheduler footer after each command. */
     struct timeval tv;
     tv.tv_sec = 0;
     tv.tv_usec = RECV_TIMEOUT_MS * 1000;  /* Convert ms to microseconds */
@@ -89,14 +90,49 @@ void client_loop() {
             break;
         }
 
-        /* Receive response from server */
-        memset(buffer, 0, sizeof(buffer));
-        while ((n = recv(sock, buffer, sizeof(buffer) - 1, 0)) > 0) {
-            buffer[n] = '\0';
-            printf("%s", buffer);
+        /* Receive response from server until scheduler footer is seen */
+        char *accum = NULL;
+        size_t accum_len = 0;
+        int footer_found = 0;
+
+        while (!footer_found) {
             memset(buffer, 0, sizeof(buffer));
+            n = recv(sock, buffer, sizeof(buffer) - 1, 0);
+            if (n > 0) {
+                buffer[n] = '\0';
+                /* print chunk immediately */
+                printf("%s", buffer);
+
+                /* append to accumulator for footer search */
+                char *new_accum = realloc(accum, accum_len + n + 1);
+                if (new_accum == NULL) {
+                    free(accum);
+                    fprintf(stderr, "client: memory error\n");
+                    break;
+                }
+                accum = new_accum;
+                memcpy(accum + accum_len, buffer, n + 1);
+                accum_len += n;
+
+                if (strstr(accum, "[scheduler]") != NULL) {
+                    footer_found = 1;
+                }
+            } else if (n == 0) {
+                /* server closed connection */
+                break;
+            } else {
+                /* n < 0: check for timeout and continue waiting for footer */
+                if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                    /* timeout — continue waiting for footer */
+                    continue;
+                } else {
+                    perror("recv failed");
+                    break;
+                }
+            }
         }
-        /* recv() timeout or end of response is normal; proceed to next command */
+
+        free(accum);
     }
 
     close(sock);
