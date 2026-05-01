@@ -104,7 +104,6 @@ int receive_response_until_marker(int sock, const char *marker) {
                 accum_len = keep;
             }
         } else if (n == 0) {
-            /* Server closed connection */
             if (accum_len > 0) {
                 fwrite(accum, 1, accum_len, stdout);
                 fflush(stdout);

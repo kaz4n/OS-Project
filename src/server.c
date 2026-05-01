@@ -144,8 +144,8 @@ static int execute_and_send_with_scheduler(int client_fd, SchedulerJob *job) {
 }
 
 /**
- * Dispatcher thread: processes jobs from the queue and executes them
- * One dispatcher thread runs continuously, taking jobs from queue and executing them
+  Dispatcher thread: processes jobs from the queue and executes them
+  One dispatcher thread runs continuously, taking jobs from queue and executing them
  */
 void* dispatcher_thread(void *arg) {
     (void)arg; /* silence unused parameter warning */
