@@ -430,7 +430,3 @@ make
 - **Port:** 8080
 - **Threading:** POSIX pthreads
 
----
-
-Generated: April 29, 2026
-Project: OS-Project Phase 3
